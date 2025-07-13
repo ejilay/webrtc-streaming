@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>WebRTC Video Streaming</title>
+</head>
+<body>
+    <h1>WebRTC Video Streaming</h1>
+    <video id="video" autoplay playsinline></video>
+    <button onclick="startStream('single')">Stream Single Video</button>
+    <button onclick="startStream('blended')">Stream Blended Videos</button>
+    <div id="status"></div>
+
+    <script>
+        let pc;
+        let ws;
+
+        async function startStream(type) {
+            // Close existing connections if any
+            if (pc) {
+                pc.close();
+            }
+            if (ws) {
+                ws.close();
+            }
+
+            // Create a new session
+            let endpoint = type === 'single' ? '/create_session' : '/create_blended_session';
+            let response = await fetch(endpoint, { method: 'POST' });
+            if (!response.ok) {
+                throw new Error('Failed to create session');
+            }
+            let data = await response.json();
+            let sessionId = data.session_id;
+
+            // Set up WebSocket - use the correct path
+            ws = new WebSocket(`ws://${window.location.host}/ws/${sessionId}`);
+            
+            // Wait for WebSocket to be ready before proceeding
+            await new Promise((resolve, reject) => {
+                ws.onopen = () => resolve();
+                ws.onerror = (error) => reject(error);
+            });
+            
+            ws.onmessage = async (event) => {
+                let message = JSON.parse(event.data);
+                if (message.type === 'answer') {
+                    await pc.setRemoteDescription(new RTCSessionDescription({
+                        sdp: message.sdp,
+                        type: message.type
+                    }));
+                } else if (message.type === 'candidate') {
+                    await pc.addIceCandidate(new RTCIceCandidate(message.candidate));
+                }
+            };
+
+            // Set up peer connection
+            pc = new RTCPeerConnection();
+            pc.ontrack = (event) => {
+                document.getElementById('video').srcObject = event.streams[0];
+            };
+            pc.onicecandidate = (event) => {
+                if (event.candidate) {
+                    ws.send(JSON.stringify({ 
+                        type: 'candidate', 
+                        candidate: {
+                            candidate: event.candidate.candidate,
+                            sdpMid: event.candidate.sdpMid,
+                            sdpMLineIndex: event.candidate.sdpMLineIndex,
+                            usernameFragment: event.candidate.usernameFragment
+                        }
+                    }));
+                }
+            };
+
+            // Create and send offer
+            let offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            ws.send(JSON.stringify({ sdp: offer.sdp, type: offer.type }));
+        }
+    </script>
+</body>
+</html>
