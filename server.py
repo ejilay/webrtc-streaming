@@ -1,65 +1,175 @@
 import argparse
 import asyncio
+import base64
 import json
 import logging
 import os
 import ssl
 import uuid
-
-import cv2
+import websockets
+import time
 import av
-import random
-from fractions import Fraction
-from typing import cast
+import numpy as np
+import io
 from aiohttp import web
 from aiortc import MediaStreamTrack, RTCPeerConnection, RTCSessionDescription
-from aiortc.contrib.media import MediaBlackhole, MediaPlayer, MediaRecorder, MediaRelay
-from av import VideoFrame
-import numpy as np
+from aiortc.contrib.media import MediaRelay
+
 
 ROOT = os.path.dirname(__file__)
 
 logger = logging.getLogger("pc")
 pcs = set()
-relay = MediaRelay()
+last_openai_response = None
 
 
-class VideoFileTrack(MediaStreamTrack):
+# Environment variables
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+
+# OpenAI Realtime API configuration
+OPENAI_WS_URL = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2025-06-03"
+OPENAI_HEADERS = {
+    "Authorization": f"Bearer {OPENAI_API_KEY}",
+    "OpenAI-Beta": "realtime=v1"
+}
+
+# Instructions for the AI assistant
+AI_INSTRUCTIONS = "You are a helpful AI assistant. Respond conversationally to user input."
+
+class CustomAudioTrack(MediaStreamTrack):
     """
-    A video stream track that reads frames from a local file and seeks randomly every 2 seconds.
+    Custom audio track that receives frames from a queue (fed by OpenAI responses).
     """
-
-    kind = "video"
+    kind = "audio"
 
     def __init__(self):
-        super().__init__()  # don't forget this!
-        file_path = os.path.join(ROOT, "static/video.mp4")
-        self.cap = cv2.VideoCapture(file_path)
-        self.fps = self.cap.get(cv2.CAP_PROP_FPS)
-        self.frame_count = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        self.pts = 0
-        self.pts_increment = int(45000 / self.fps)  # 90kHz timebase
-        self.last_seek_time = asyncio.get_running_loop().time()
+        super().__init__()
+        self._queue = asyncio.Queue()
 
     async def recv(self):
-        current_time = asyncio.get_running_loop().time()
-        if current_time - self.last_seek_time >= 2:
-            random_frame = random.randint(0, self.frame_count - 1)
-            self.cap.set(cv2.CAP_PROP_POS_FRAMES, random_frame)
-            self.last_seek_time = current_time
-        if self.cap.get(cv2.CAP_PROP_POS_FRAMES) >= self.frame_count:
-            self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-        ret, img = self.cap.read()
-        if not ret:
-            return self.frame
-        #    raise RuntimeError("Failed to read frame from video file")
+        frame = await self._queue.get()
+        return frame
 
-        self.frame = VideoFrame.from_ndarray(img.astype(np.uint8), format="bgr24")
-        self.frame.pts = self.pts
-        self.pts += self.pts_increment
-        self.frame.time_base = Fraction(1, 45000)
-        return self.frame
+import av
+import numpy as np
 
+
+async def handle_ws_recv_from_openai(ws, out_track):
+    """
+    Handle incoming messages from OpenAI WebSocket, process audio deltas.
+    """
+    # Resampler for OpenAI (24kHz stereo) to WebRTC (typically 48kHz stereo)
+    resampler = av.AudioResampler(format='s16', layout='stereo', rate=48000)
+    pts = 0
+    time_delta = int(0.02*24000)
+    while True:
+        try:
+            message = await ws.recv()
+            event = json.loads(message)
+            event_type = event.get("type")
+            
+            if event_type == "response.audio.delta":
+                # Decode base64 audio delta (PCM 16-bit 24kHz mono)
+                audio_delta = base64.b64decode(event["delta"])
+                samples = np.frombuffer(audio_delta, dtype=np.int16)
+                
+                stereo_audio = np.column_stack((samples, samples))
+                interleaved = stereo_audio.ravel()
+                packed_audio = interleaved[np.newaxis, :]
+
+                frame = av.AudioFrame.from_ndarray(packed_audio, format='s16', layout='stereo')
+                frame.sample_rate = 24000 
+                    
+                frames = resampler.resample(frame)
+                for resampled in frames:
+                    resampled.pts = pts
+                    pts += time_delta
+                    await out_track._queue.put(resampled)
+
+
+            elif event_type == "response.audio.done":
+                logger.info("Audio response complete.")
+                # Optionally flush or handle end of response
+
+            elif event_type == "error":
+                logger.error(f"OpenAI error: {event}")
+
+        except websockets.exceptions.ConnectionClosed:
+            break
+        except Exception as e:
+            logger.error(f"Error in WS receive: {e}")
+            break
+
+@staticmethod
+def generate_wav_header(data_size: int) -> bytes:
+    sample_rate = 24000
+    channels = 1
+    bits = 16
+    byte_rate = sample_rate * channels * (bits // 8)
+    block_align = channels * (bits // 8)
+    file_size = data_size + 44 - 8
+    header = (
+        b'RIFF' +
+        file_size.to_bytes(4, 'little') +
+        b'WAVEfmt ' +
+        (16).to_bytes(4, 'little') +
+        (1).to_bytes(2, 'little') +
+        channels.to_bytes(2, 'little') +
+        sample_rate.to_bytes(4, 'little') +
+        byte_rate.to_bytes(4, 'little') +
+        block_align.to_bytes(2, 'little') +
+        bits.to_bytes(2, 'little') +
+        b'data' +
+        data_size.to_bytes(4, 'little')
+    )
+    return header
+
+
+async def process_audio_from_client(in_track, ws):
+    """
+    Process incoming WebRTC audio frames, resample, and send to OpenAI.
+    """
+    # Resampler for WebRTC (48kHz) to OpenAI (24kHz mono s16)
+    resampler = av.audio.resampler.AudioResampler(
+        format="s16",  # Signed 16-bit
+        layout="mono",
+        rate=24000
+    )
+    #session_pcm_buffer = io.BytesIO()
+    while True:
+        try:
+            frame = await in_track.recv() #type: av.AudioFrame
+            if not isinstance(frame, av.AudioFrame):
+                continue
+            
+            frame.pts = None  # Reset for resampler
+            resampled_frames = resampler.resample(frame)
+
+            if resampled_frames:
+                    for resampled in resampled_frames:
+                        # Convert to bytes (PCM s16 mono)
+                        pcm_data = resampled.to_ndarray().tobytes()
+                        #session_pcm_buffer.write(pcm_data)
+                        b64_audio = base64.b64encode(pcm_data).decode("utf-8")
+
+                        
+                        # Send to OpenAI
+                        append_msg = {
+                            "type": "input_audio_buffer.append",
+                            "audio": b64_audio
+                        }
+                        dumped = json.dumps(append_msg)
+                        await ws.send(dumped)
+
+        except Exception as e:
+            logger.error(f"Error processing audio: {e}")
+            break
+        #finally:
+        #   logger.info("Audio processing loop ended unexpectedly")
+    #data = session_pcm_buffer.getvalue()
+    #header = generate_wav_header(len(data))
+    #with open(f"input_record_last.wav", "wb") as f:
+    #    f.write(header + data)
 
 async def index(request):
     content = open(os.path.join(ROOT, "static/index.html"), "r").read()
@@ -84,17 +194,53 @@ async def offer(request):
 
     log_info("Created for %s", request.remote)
 
-    # prepare local media
-    player = MediaPlayer(os.path.join(ROOT, "static/demo-instruct.wav"))
-    if args.record_to:
-        recorder = MediaRecorder(args.record_to)
-    else:
-        recorder = MediaBlackhole()
+    # Connect to OpenAI WebSocket
+    ws = await websockets.connect(OPENAI_WS_URL, extra_headers=OPENAI_HEADERS)
+    logger.info(f"received OpenAI session created: {await ws.recv()}")
+    # Update session configuration
+    session_update = {
+                        "modalities": ["text", "audio"],
+                        "instructions": AI_INSTRUCTIONS,
+                        "voice": "alloy",
+                        "input_audio_noise_reduction": {"type":"near_field"},
+                        "input_audio_transcription": {
+                            "model": "gpt-4o-transcribe",
+                            "language": "ru"
+                        },
+                        "turn_detection": {
+                            "type": "server_vad",
+                            #"threshold": 0.6,
+                            #"prefix_padding_ms": 500,
+                            #"silence_duration_ms": 1500,
+                            "create_response": True,
+                            "interrupt_response": True
+                        },
+                        "input_audio_format": "pcm16",
+                        "output_audio_format": "pcm16",
+                        "max_response_output_tokens": 4096
+                    }
+    event = {
+            "type": "session.update",
+            "session": session_update
+        }
+    await ws.send(json.dumps(event))
+    logger.info(f"received OpenAI session update: {await ws.recv()}")
 
-    video_track = VideoFileTrack()
-    pc.addTrack(video_track)
-    if player.audio is not None:
-        pc.addTrack(player.audio)
+
+    async def check_openai_response_timeout(ws):
+            while ws is not None and not ws.closed:
+                try:
+                    await ws.ping()
+                    await asyncio.sleep(15)
+                except Exception as e:
+                    logger.error(f"OpenAI ping error: {str(e)}")
+                    break
+    #ping_task = asyncio.create_task(check_openai_response_timeout(ws))
+    # Create custom output track for AI audio responses
+    out_track = CustomAudioTrack()
+
+    # Start handling OpenAI responses
+    asyncio.create_task(handle_ws_recv_from_openai(ws, out_track))
 
     @pc.on("datachannel")
     def on_datachannel(channel):
@@ -106,24 +252,28 @@ async def offer(request):
     @pc.on("connectionstatechange")
     async def on_connectionstatechange():
         log_info("Connection state is %s", pc.connectionState)
-        if pc.connectionState == "failed":
+        if pc.connectionState == "failed" or pc.connectionState == "closed":
             await pc.close()
             pcs.discard(pc)
+            ping_task.cancel()
+            ws.close()
 
     @pc.on("track")
     def on_track(track):
         log_info("Track %s received", track.kind)
 
-        recorder.addTrack(track)
+        if track.kind == "audio":
+            asyncio.create_task(process_audio_from_client(track, ws))
+            # Add output track back to client
+            pc.addTrack(out_track)
 
         @track.on("ended")
         async def on_ended():
             log_info("Track %s ended", track.kind)
-            await recorder.stop()
+            
 
     # handle offer
     await pc.setRemoteDescription(offer)
-    await recorder.start()
 
     # send answer
     answer = await pc.createAnswer()
