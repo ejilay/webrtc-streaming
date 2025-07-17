@@ -83,8 +83,6 @@ class CustomAudioTrack(MediaStreamTrack):
         self._prev_time = time.time()
         return frame
 
-import av
-import numpy as np
 
 
 resampler = av.AudioResampler(format='s16', layout='stereo', rate=48000)
@@ -110,7 +108,6 @@ async def process_audio_from_openai(audio_base64, out_track: CustomAudioTrack):
             
         frames = resampler.resample(frame)
         for resampled in frames:
-            
             await out_track._queue.put(resampled)
 
 async def handle_ws_recv_from_openai(ws, out_track: CustomAudioTrack):
@@ -119,7 +116,14 @@ async def handle_ws_recv_from_openai(ws, out_track: CustomAudioTrack):
     """
     # Resampler for OpenAI (24kHz stereo) to WebRTC (typically 48kHz stereo)
     
+    queue = asyncio.Queue()
+
+    async def process_queue():
+        while True:
+            delta = await queue.get()
+            await process_audio_from_openai(delta, out_track)
     
+    asyncio.create_task(process_queue())
     
     while True:
         try:
@@ -129,7 +133,8 @@ async def handle_ws_recv_from_openai(ws, out_track: CustomAudioTrack):
             
             if event_type == "response.audio.delta":
                 #logger.info(f"response.audio.delta")
-                await process_audio_from_openai(event["delta"], out_track)
+                await queue.put(event["delta"])
+                #await process_audio_from_openai(event["delta"], out_track)
 
             elif event_type == "response.audio.done":
                 logger.info("Audio response complete.")
