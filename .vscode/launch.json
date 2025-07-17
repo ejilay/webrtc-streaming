@@ -10,7 +10,7 @@
             "request": "launch",
             "program": "${workspaceFolder}/server.py",
             "console": "integratedTerminal",
-            "args": ["--record", "output.wav"]
+            "args": ["--record", "output.wav", "--verbose"]
         }
     ]
 }
