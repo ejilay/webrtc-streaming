@@ -8,7 +8,7 @@
             "name": "Python Debugger: Current File with Arguments",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/server.py",
+            "program": "${workspaceFolder}/server_old.py",
             "console": "integratedTerminal",
             "args": ["--record", "output.wav", "--verbose"]
         }

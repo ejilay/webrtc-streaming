@@ -1,205 +1,206 @@
+import argparse
 import asyncio
+from fractions import Fraction
 import json
+import logging
+import os
+from re import S
+import ssl
 import uuid
+import time
 import av
-from aiortc import RTCConfiguration, RTCPeerConnection, VideoStreamTrack, AudioStreamTrack
-from fastapi import FastAPI, HTTPException
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
-from typing import Dict, Optional
+import numpy as np
+from aiohttp import web
+from aiortc import MediaStreamTrack, RTCPeerConnection, RTCSessionDescription
 
-app = FastAPI()
 
-# Mount static files
-app.mount("/static", StaticFiles(directory="static"), name="static")
+ROOT = os.path.dirname(__file__)
 
-# Dictionary to store active sessions
-sessions: Dict[str, RTCPeerConnection] = {}
+logger = logging.getLogger("pc")
+pcs = set()
+last_openai_response = None
 
-# Pydantic models for request validation
-class SDPPayload(BaseModel):
-    sdp: str
-    type: str
+TIME_SPAN = 0.02
+SAMPLE_RATE_OUT = 48000
+SAMPLE_RATE_IN = 24000
+SAMPLE_COUNT_OUT = int(TIME_SPAN * SAMPLE_RATE_OUT)
+SAMPLE_COUNT_IN = int(TIME_SPAN * SAMPLE_RATE_IN)
 
-class ICECandidatePayload(BaseModel):
-    candidate: str
-    sdpMid: Optional[str]
-    sdpMLineIndex: Optional[int]
-    usernameFragment: Optional[str]
 
-# Generate unique session IDs
-def generate_session_id() -> str:
-    return str(uuid.uuid4())
+class CustomAudioTrack(MediaStreamTrack):
+    """
+    Custom audio track that receives frames from a queue (fed by OpenAI responses).
+    """
+    kind = "audio"
+    _count: int = 0
+    _start: float = 0
+    _prev_time: float = 0
 
-# Video track that loops a video file
-class LoopingVideoStreamTrack(VideoStreamTrack):
-    def __init__(self, container):
+    def __init__(self):
         super().__init__()
-        self.container = container
-        self.stream = container.streams.video[0]
-        self.frame_iter = container.decode(self.stream)
-        self.loop_counter = 0
-        self.duration = self.stream.duration * self.stream.time_base
+        self._queue = asyncio.Queue()
 
     async def recv(self):
-        try:
-            frame = next(self.frame_iter)
-        except StopIteration:
-            self.loop_counter += 1
-            self.container.seek(0)
-            self.frame_iter = self.container.decode(self.stream)
-            frame = next(self.frame_iter)
-        frame.pts = frame.pts + self.loop_counter * self.duration
+        if self._start == 0:
+            self._start = time.time()
+        if self._prev_time == 0:
+            self._prev_time = time.time()
+        
+        frame = await self._queue.get()
+        frame.pts = SAMPLE_COUNT_OUT*self._count
+        frame.time_base = Fraction(1, SAMPLE_RATE_OUT)
+        
+        self._count += 1
+        
+        wait = self._start + (self._count+1) * TIME_SPAN - time.time()
+        if wait>0:
+            await asyncio.sleep(wait)
+        
         return frame
 
-# Audio track that loops audio from the same video file
-class LoopingAudioStreamTrack(AudioStreamTrack):
-    def __init__(self, container):
-        super().__init__()
-        self.container = container
-        self.stream = container.streams.audio[0]
-        self.frame_iter = container.decode(self.stream)
-        self.loop_counter = 0
-        self.duration = self.stream.duration * self.stream.time_base
 
-    async def recv(self):
-        try:
-            frame = next(self.frame_iter)
-        except StopIteration:
-            self.loop_counter += 1
-            self.container.seek(0)
-            self.frame_iter = self.container.decode(self.stream)
-            frame = next(self.frame_iter)
-        frame.pts = frame.pts + self.loop_counter * self.duration
-        return frame
 
-# Video track that blends two video files
-class BlendedVideoStreamTrack(VideoStreamTrack):
-    def __init__(self, file1: str, file2: str):
-        super().__init__()
-        self.container1 = av.open(file1)
-        self.container2 = av.open(file2)
-        self.stream1 = self.container1.streams.video[0]
-        self.stream2 = self.container2.streams.video[0]
-        self.frame_iter1 = self.container1.decode(self.stream1)
-        self.frame_iter2 = self.container2.decode(self.stream2)
+async def send_audio(out_track: CustomAudioTrack):
+    chunk_size = SAMPLE_COUNT_IN * 2 #two bytes per sample
 
-    async def recv(self):
-        try:
-            frame1 = next(self.frame_iter1)
-            frame2 = next(self.frame_iter2)
-        except StopIteration:
-            # Loop both videos
-            self.container1.seek(0)
-            self.container2.seek(0)
-            self.frame_iter1 = self.container1.decode(self.stream1)
-            self.frame_iter2 = self.container2.decode(self.stream2)
-            frame1 = next(self.frame_iter1)
-            frame2 = next(self.frame_iter2)
-        # Blend frames by averaging pixel values
-        blended_array = (frame1.to_ndarray() + frame2.to_ndarray()) / 2
-        return av.VideoFrame.from_ndarray(blended_array.astype('uint8'), format='rgb24')
+    with open("audio.pcm", "rb") as f:
+        audio = f.read()
+    resampler = av.AudioResampler(format='s16', layout='stereo', rate=SAMPLE_RATE_OUT)
+    for i in range(0, len(audio), chunk_size):
+        audio_delta = audio[i:i + chunk_size]
+        
+        samples = np.frombuffer(audio_delta, dtype=np.int16)
+        
+        #if len(samples) < chunk_size:
+        #    samples = np.pad(samples, (0, chunk_size - len(samples)), mode='constant')
+        
+        stereo_audio = np.column_stack((samples, samples))
+        interleaved = stereo_audio.ravel()
+        packed_audio = interleaved[np.newaxis, :]
 
-# Endpoint to create a new session for single video streaming
-@app.post("/create_session")
-async def create_session():
-    session_id = generate_session_id()
+        frame = av.AudioFrame.from_ndarray(packed_audio, format='s16', layout='stereo')
+        frame.sample_rate = 24000 
+        
+        logger.info(f"frame before resampler: {frame.samples}")
+        frames = resampler.resample(frame)
+        logger.info(f"frame after resampler: {frames[0].samples}")
+        for resampled in frames:
+            logger.info(f"resampled: {resampled.pts} {resampled.time_base}")
+            await out_track._queue.put(resampled)
+ 
+
+async def index(request):
+    content = open(os.path.join(ROOT, "static/index.html"), "r").read()
+    return web.Response(content_type="text/html", text=content)
+
+
+async def javascript(request):
+    content = open(os.path.join(ROOT, "static/client.js"), "r").read()
+    return web.Response(content_type="application/javascript", text=content)
+
+
+async def offer(request):
+    params = await request.json()
+    offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
+
     pc = RTCPeerConnection()
-    sessions[session_id] = pc
-    container = av.open('video.mp4')
-    video_track = LoopingVideoStreamTrack(container)
-    audio_track = LoopingAudioStreamTrack(container)
-    pc.addTrack(video_track)
-    pc.addTrack(audio_track)
+    pc_id = "PeerConnection(%s)" % uuid.uuid4()
+    pcs.add(pc)
 
-    # Store ICE candidates for this session
-    ice_candidates = []
+    def log_info(msg, *args):
+        logger.info(pc_id + " " + msg, *args)
 
-    @pc.on("icecandidate")
-    def on_icecandidate(event):
-        if event.candidate:
-            ice_candidates.append({
-                "candidate": event.candidate.candidate,
-                "sdpMid": event.candidate.sdpMid,
-                "sdpMLineIndex": event.candidate.sdpMLineIndex,
-                "usernameFragment": event.candidate.usernameFragment
-            })
+    log_info("Created for %s", request.remote)
 
-    return {"session_id": session_id}
+    
+    out_track = CustomAudioTrack()
 
-# Endpoint to create a new session for blended video streaming
-@app.post("/create_blended_session")
-async def create_blended_session():
-    session_id = generate_session_id()
-    pc = RTCPeerConnection()
-    sessions[session_id] = pc
-    blended_track = BlendedVideoStreamTrack('video1.mp4', 'video2.mp4')
-    pc.addTrack(blended_track)
+    
+    @pc.on("datachannel")
+    def on_datachannel(channel):
+        @channel.on("message")
+        def on_message(message):
+            if isinstance(message, str) and message.startswith("ping"):
+                channel.send("pong" + message[4:])
 
-    # Store ICE candidates for this session
-    ice_candidates = []
+    @pc.on("connectionstatechange")
+    async def on_connectionstatechange():
+        log_info("Connection state is %s", pc.connectionState)
+        if pc.connectionState == "failed" or pc.connectionState == "closed":
+            await pc.close()
+            pcs.discard(pc)
+            
 
-    @pc.on("icecandidate")
-    def on_icecandidate(event):
-        if event.candidate:
-            ice_candidates.append({
-                "candidate": event.candidate.candidate,
-                "sdpMid": event.candidate.sdpMid,
-                "sdpMLineIndex": event.candidate.sdpMLineIndex,
-                "usernameFragment": event.candidate.usernameFragment
-            })
+    @pc.on("track")
+    def on_track(track):
+        log_info("Track %s received", track.kind)
 
-    return {"session_id": session_id}
+        if track.kind == "audio":
+            # Add output track back to client
+            pc.addTrack(out_track)
+            time.sleep(1)
+            asyncio.create_task(send_audio(out_track))
 
-# Endpoint to handle client's SDP offer
-@app.post("/offer/{session_id}")
-async def handle_offer(session_id: str, payload: SDPPayload):
-    pc = sessions.get(session_id)
-    if not pc:
-        raise HTTPException(status_code=404, detail="Session not found")
-    from aiortc import RTCSessionDescription
-    await pc.setRemoteDescription(RTCSessionDescription(sdp=payload.sdp, type=payload.type))
+
+        @track.on("ended")
+        async def on_ended():
+            log_info("Track %s ended", track.kind)
+            
+
+    # handle offer
+    await pc.setRemoteDescription(offer)
+
+    # send answer
     answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
-    return {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
 
-# Endpoint to handle client's ICE candidates
-@app.post("/ice_candidate/{session_id}")
-async def handle_ice_candidate(session_id: str, payload: ICECandidatePayload):
-    pc = sessions.get(session_id)
-    if not pc:
-        raise HTTPException(status_code=404, detail="Session not found")
+    return web.Response(
+        content_type="application/json",
+        text=json.dumps(
+            {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
+        ),
+    )
 
-    from aiortc import RTCIceCandidate
-    await pc.addIceCandidate(RTCIceCandidate({
-        "candidate": payload.candidate,
-        "sdpMid": payload.sdpMid,
-        "sdpMLineIndex": payload.sdpMLineIndex,
-        "usernameFragment": payload.usernameFragment
-    })
-    return {"status": "ICE candidate added"}
 
-# Endpoint to retrieve server's ICE candidates
-@app.get("/ice_candidates/{session_id}")
-async def get_ice_candidates(session_id: str):
-    pc = sessions.get(session_id)
-    if not pc:
-        raise HTTPException(status_code=404, detail="Session not found")
+async def on_shutdown(app):
+    # close peer connections
+    coros = [pc.close() for pc in pcs]
+    await asyncio.gather(*coros)
+    pcs.clear()
 
-    # This is a simplified approach; in practice, store candidates in a list
-    # Since aiortc doesn't expose candidates directly, we rely on the on_icecandidate handler
-    # Clients should poll this endpoint after sending offer
-    return {"candidates": []}  # Update based on stored candidates if needed
-
-# Endpoint to clean up session
-@app.delete("/session/{session_id}")
-async def delete_session(session_id: str):
-    pc = sessions.pop(session_id, None)
-    if pc:
-        await pc.close()
-        return {"status": "Session closed"}
-    raise HTTPException(status_code=404, detail="Session not found")
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    parser = argparse.ArgumentParser(
+        description="WebRTC audio / video / data-channels demo"
+    )
+    parser.add_argument("--cert-file", help="SSL certificate file (for HTTPS)")
+    parser.add_argument("--key-file", help="SSL key file (for HTTPS)")
+    parser.add_argument(
+        "--host", default="0.0.0.0", help="Host for HTTP server (default: 0.0.0.0)"
+    )
+    parser.add_argument(
+        "--port", type=int, default=8080, help="Port for HTTP server (default: 8080)"
+    )
+    parser.add_argument("--record-to", help="Write received media to a file.")
+    parser.add_argument("--verbose", "-v", action="count")
+    args = parser.parse_args()
+
+    if args.verbose:
+        logging.basicConfig(level=logging.INFO)
+    else:
+        logging.basicConfig(level=logging.ERROR)
+
+    if args.cert_file:
+        ssl_context = ssl.SSLContext()
+        ssl_context.load_cert_chain(args.cert_file, args.key_file)
+    else:
+        ssl_context = None
+
+    app = web.Application()
+    app.on_shutdown.append(on_shutdown)
+    app.router.add_get("/", index)
+    app.router.add_get("/client.js", javascript)
+    app.router.add_post("/offer", offer)
+    web.run_app(
+        app, access_log=None, host=args.host, port=args.port, ssl_context=ssl_context
+    )

@@ -71,15 +71,15 @@ class CustomAudioTrack(MediaStreamTrack):
         frame = await self._queue.get()
         frame.pts = 480*self._count
         frame.time_base = Fraction(1, 48000)
-        wait = self._start + self._count * 0.02 - time.time()
+        self._count += 1
+        wait = self._start + (self._count+1) * 0.02 - time.time() - 0.06
         if wait>0:
             if wait > 0.02:
                 logger.info(f"waiting for {wait} seconds")
             await asyncio.sleep(wait)
-        self._count += 1
         delta = time.time() - self._prev_time
-        if delta > 0.021:
-            logger.info(f"time between send frames:{delta}")
+        if delta > 0.022:
+            logger.info(f"work time between send frames:{delta-wait} delta:{delta} wait:{wait}")
         self._prev_time = time.time()
         return frame
 
@@ -90,7 +90,11 @@ resampler = av.AudioResampler(format='s16', layout='stereo', rate=48000)
 
 async def process_audio_from_openai(audio_base64, out_track: CustomAudioTrack):
     chunk_size = 480
-    audio = base64.b64decode(audio_base64)
+    #audio = base64.b64decode(audio_base64)
+    #with open("audio.pcm", "ab") as f:
+    #    f.write(audio)
+    with open("audio.pcm", "rb") as f:
+        audio = f.read()
     for i in range(0, len(audio), chunk_size):
         audio_delta = audio[i:i + chunk_size]
         
@@ -115,7 +119,10 @@ async def handle_ws_recv_from_openai(ws, out_track: CustomAudioTrack):
     Handle incoming messages from OpenAI WebSocket, process audio deltas.
     """
     # Resampler for OpenAI (24kHz stereo) to WebRTC (typically 48kHz stereo)
-    
+    if ws is None:
+        await process_audio_from_openai('', out_track)
+        return
+
     queue = asyncio.Queue()
 
     async def process_queue():
@@ -235,54 +242,55 @@ async def offer(request):
     log_info("Created for %s", request.remote)
 
     # Connect to OpenAI WebSocket
-    ws = await websockets.connect(OPENAI_WS_URL, extra_headers=OPENAI_HEADERS)
-    response = json.loads(await ws.recv())
-    if response.get("type") == "error":
-        logger.error(f"OpenAI error: {response}")
-        return web.Response(content_type="application/json", text="{error: '3rd party service connection error'}")
+    ws = None #await websockets.connect(OPENAI_WS_URL, extra_headers=OPENAI_HEADERS)
+    if ws is not None:
+        response = json.loads(await ws.recv())
+        if response.get("type") == "error":
+            logger.error(f"OpenAI error: {response}")
+            return web.Response(content_type="application/json", text="{error: '3rd party service connection error'}")
     
-    # Update session configuration
-    session_update = {
-                        "modalities": ["text", "audio"],
-                        "instructions": AI_INSTRUCTIONS,
-                        "voice": "shimmer",
-                        "input_audio_noise_reduction": {"type":"near_field"},
-                        "input_audio_transcription": {
-                            "model": "gpt-4o-transcribe",
-                            "language": "ru"
-                        },
-                        "turn_detection": {
-                            "type": "server_vad",
-                            #"threshold": 0.6,
-                            #"prefix_padding_ms": 500,
-                            #"silence_duration_ms": 1500,
-                            "create_response": True,
-                            "interrupt_response": True
-                        },
-                        "input_audio_format": "pcm16",
-                        "output_audio_format": "pcm16",
-                        "max_response_output_tokens": 4096
-                    }
-    event = {
-            "type": "session.update",
-            "session": session_update
-        }
-    await ws.send(json.dumps(event))
-    response = json.loads(await ws.recv())
-    if response.get("type") == "error":
-        logger.error(f"OpenAI error: {response}")
-        return web.Response(content_type="application/json", text="{error: '3rd party service connection error'}")
+        # Update session configuration
+        session_update = {
+                            "modalities": ["text", "audio"],
+                            "instructions": AI_INSTRUCTIONS,
+                            "voice": "shimmer",
+                            "input_audio_noise_reduction": {"type":"near_field"},
+                            "input_audio_transcription": {
+                                "model": "gpt-4o-transcribe",
+                                "language": "ru"
+                            },
+                            "turn_detection": {
+                                "type": "server_vad",
+                                #"threshold": 0.6,
+                                #"prefix_padding_ms": 500,
+                                #"silence_duration_ms": 1500,
+                                "create_response": True,
+                                "interrupt_response": True
+                            },
+                            "input_audio_format": "pcm16",
+                            "output_audio_format": "pcm16",
+                            "max_response_output_tokens": 4096
+                        }
+        event = {
+                "type": "session.update",
+                "session": session_update
+            }
+        await ws.send(json.dumps(event))
+        response = json.loads(await ws.recv())
+        if response.get("type") == "error":
+            logger.error(f"OpenAI error: {response}")
+            return web.Response(content_type="application/json", text="{error: '3rd party service connection error'}")
 
 
-    async def ping_openai(ws):
-            while ws is not None and not ws.closed:
-                try:
-                    await ws.ping()
-                    await asyncio.sleep(15)
-                except Exception as e:
-                    logger.error(f"OpenAI ping error: {str(e)}")
-                    break
-    ping_task = asyncio.create_task(ping_openai(ws))
+        async def ping_openai(ws):
+                while ws is not None and not ws.closed:
+                    try:
+                        await ws.ping()
+                        await asyncio.sleep(15)
+                    except Exception as e:
+                        logger.error(f"OpenAI ping error: {str(e)}")
+                        break
+        ping_task = asyncio.create_task(ping_openai(ws))
     # Create custom output track for AI audio responses
     out_track = CustomAudioTrack()
 
@@ -304,7 +312,8 @@ async def offer(request):
             pcs.discard(pc)
             if ping_task is not None:
                 ping_task.cancel()
-            ws.close()
+            if ws is not None:
+                ws.close()
 
     @pc.on("track")
     def on_track(track):
