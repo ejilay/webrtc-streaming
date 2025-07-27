@@ -26,6 +26,12 @@ logger = logging.getLogger("pc")
 pcs = set()
 last_openai_response = None
 
+FPS = 50 #the choosen one
+TIME_SPAN = 1.0/FPS
+SAMPLE_RATE_WEBRTC = 48000 #WebRTC Opus
+SAMPLE_RATE_OPENAI = 24000 #OpenAI
+SAMPLE_COUNT_OUT = int(TIME_SPAN * SAMPLE_RATE_WEBRTC)
+SAMPLE_COUNT_IN = int(TIME_SPAN * SAMPLE_RATE_OPENAI)
 
 # Environment variables
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
@@ -57,7 +63,6 @@ class CustomAudioTrack(MediaStreamTrack):
     kind = "audio"
     _count: int = 0
     _start: float = 0
-    _prev_time: float = 0
 
     def __init__(self):
         super().__init__()
@@ -66,21 +71,16 @@ class CustomAudioTrack(MediaStreamTrack):
     async def recv(self):
         if self._start == 0:
             self._start = time.time()
-        if self._prev_time == 0:
-            self._prev_time = time.time()
         frame = await self._queue.get()
-        frame.pts = 480*self._count
-        frame.time_base = Fraction(1, 48000)
+        frame.pts = SAMPLE_COUNT_OUT*self._count
+        frame.time_base = Fraction(1, SAMPLE_RATE_WEBRTC)
         self._count += 1
-        wait = self._start + (self._count+1) * 0.02 - time.time() - 0.06
+        wait = self._start + (self._count+1) * TIME_SPAN - time.time()
         if wait>0:
-            if wait > 0.02:
+            if wait > TIME_SPAN:
                 logger.info(f"waiting for {wait} seconds")
             await asyncio.sleep(wait)
-        delta = time.time() - self._prev_time
-        if delta > 0.022:
-            logger.info(f"work time between send frames:{delta-wait} delta:{delta} wait:{wait}")
-        self._prev_time = time.time()
+        
         return frame
 
 
@@ -88,13 +88,9 @@ class CustomAudioTrack(MediaStreamTrack):
 resampler = av.AudioResampler(format='s16', layout='stereo', rate=48000)
 
 
-async def process_audio_from_openai(audio_base64, out_track: CustomAudioTrack):
-    chunk_size = 480
-    #audio = base64.b64decode(audio_base64)
-    #with open("audio.pcm", "ab") as f:
-    #    f.write(audio)
-    with open("audio.pcm", "rb") as f:
-        audio = f.read()
+async def process_audio_from_openai(audio_base64, to_client: CustomAudioTrack):
+    chunk_size = SAMPLE_COUNT_IN * 2 #two bytes per sample
+    audio = base64.b64decode(audio_base64)
     for i in range(0, len(audio), chunk_size):
         audio_delta = audio[i:i + chunk_size]
         
@@ -107,28 +103,25 @@ async def process_audio_from_openai(audio_base64, out_track: CustomAudioTrack):
         interleaved = stereo_audio.ravel()
         packed_audio = interleaved[np.newaxis, :]
 
-        frame = av.AudioFrame.from_ndarray(packed_audio, format='s16', layout='stereo')
-        frame.sample_rate = 24000 
+        frame_from_openai = av.AudioFrame.from_ndarray(packed_audio, format='s16', layout='stereo')
+        frame_from_openai.sample_rate = SAMPLE_RATE_OPENAI 
             
-        frames = resampler.resample(frame)
-        for resampled in frames:
-            await out_track._queue.put(resampled)
+        frames_to_webrtc = resampler.resample(frame_from_openai)
+        for resampled in frames_to_webrtc:
+            await to_client._queue.put(resampled)
 
-async def handle_ws_recv_from_openai(ws, out_track: CustomAudioTrack):
+async def handle_ws_recv_from_openai(ws, to_client: CustomAudioTrack):
     """
     Handle incoming messages from OpenAI WebSocket, process audio deltas.
     """
-    # Resampler for OpenAI (24kHz stereo) to WebRTC (typically 48kHz stereo)
-    if ws is None:
-        await process_audio_from_openai('', out_track)
-        return
+   
 
-    queue = asyncio.Queue()
+    queue_from_openai = asyncio.Queue()
 
     async def process_queue():
         while True:
-            delta = await queue.get()
-            await process_audio_from_openai(delta, out_track)
+            delta = await queue_from_openai.get()
+            await process_audio_from_openai(delta, to_client)
     
     asyncio.create_task(process_queue())
     
@@ -137,19 +130,25 @@ async def handle_ws_recv_from_openai(ws, out_track: CustomAudioTrack):
             message = await ws.recv()
             event = json.loads(message)
             event_type = event.get("type")
-            
+            #logger.info(f"{time.time()} OpenAI event: {event_type}")
             if event_type == "response.audio.delta":
                 #logger.info(f"response.audio.delta")
-                await queue.put(event["delta"])
+                await queue_from_openai.put(event["delta"])
                 #await process_audio_from_openai(event["delta"], out_track)
 
             elif event_type == "response.audio.done":
-                logger.info("Audio response complete.")
+                #logger.info("Audio response complete.")
+                pass
                 
                 
 
             elif event_type == "error":
-                logger.error(f"OpenAI error: {event}")
+                #logger.error(f"OpenAI error: {event}")
+                pass
+            
+            else:
+                #logger.info(f"{time.time()} OpenAI event: {event}")
+                pass
 
         except websockets.exceptions.ConnectionClosed:
             break
@@ -187,7 +186,7 @@ async def process_audio_from_client(in_track, ws):
     resampler = av.audio.resampler.AudioResampler(
         format="s16",  # Signed 16-bit
         layout="mono",
-        rate=24000
+        rate=SAMPLE_RATE_OPENAI
     )
     while True:
         try:
@@ -242,7 +241,7 @@ async def offer(request):
     log_info("Created for %s", request.remote)
 
     # Connect to OpenAI WebSocket
-    ws = None #await websockets.connect(OPENAI_WS_URL, extra_headers=OPENAI_HEADERS)
+    ws = await websockets.connect(OPENAI_WS_URL, extra_headers=OPENAI_HEADERS)
     if ws is not None:
         response = json.loads(await ws.recv())
         if response.get("type") == "error":
