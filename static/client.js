@@ -10,6 +10,12 @@ var pc = null;
 // data channel
 var dc = null, dcInterval = null;
 
+// audio monitoring
+var audioContext = null;
+var analyser = null;
+var microphoneStream = null;
+var audioLevelInterval = null;
+
 function createPeerConnection() {
     var config = {
         sdpSemantics: 'unified-plan'
@@ -178,14 +184,22 @@ function start() {
     };
 
     if (document.getElementById('use-audio').checked) {
-        const audioConstraints = {};
+        const audioConstraints = {
+            echoCancellation: document.getElementById('echo-cancellation').checked,
+            noiseSuppression: document.getElementById('noise-suppression').checked,
+            autoGainControl: document.getElementById('auto-gain-control').checked,
+            latency: 0.02,  // 20ms latency for real-time processing
+            channelCount: 1, // Mono for better processing
+            sampleRate: 48000,
+            sampleSize: 16
+        };
 
         const device = document.getElementById('audio-input').value;
         if (device) {
             audioConstraints.deviceId = { exact: device };
         }
 
-        constraints.audio = Object.keys(audioConstraints).length ? audioConstraints : true;
+        constraints.audio = audioConstraints;
     }
 
     if (document.getElementById('use-video').checked) {
@@ -213,9 +227,16 @@ function start() {
             document.getElementById('media').style.display = 'block';
         }
         navigator.mediaDevices.getUserMedia(constraints).then((stream) => {
+            microphoneStream = stream;
             stream.getTracks().forEach((track) => {
                 pc.addTrack(track, stream);
             });
+            
+            // Initialize audio monitoring if audio is enabled
+            if (constraints.audio) {
+                initAudioMonitoring(stream);
+            }
+            
             return negotiate();
         }, (err) => {
             alert('Could not acquire media: ' + err);
@@ -230,6 +251,9 @@ function start() {
 function stop() {
     document.getElementById('stop').style.display = 'none';
     document.getElementById('start').style.display = 'block';
+
+    // Stop audio monitoring
+    stopAudioMonitoring();
 
     // close data channel
     if (dc) {
@@ -249,6 +273,12 @@ function stop() {
     pc.getSenders().forEach((sender) => {
         sender.track.stop();
     });
+
+    // Stop microphone stream tracks
+    if (microphoneStream) {
+        microphoneStream.getTracks().forEach(track => track.stop());
+        microphoneStream = null;
+    }
 
     // close peer connection
     setTimeout(() => {
@@ -315,6 +345,157 @@ function sdpFilterCodec(kind, codec, realSdp) {
 
 function escapeRegExp(string) {
     return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // $& means the whole matched string
+}
+
+function initAudioMonitoring(stream) {
+    if (!audioContext) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    
+    const source = audioContext.createMediaStreamSource(stream);
+    analyser = audioContext.createAnalyser();
+    analyser.fftSize = 256;
+    analyser.smoothingTimeConstant = 0.8;
+    
+    source.connect(analyser);
+    
+    const bufferLength = analyser.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+    let feedbackCounter = 0;
+    let noiseFloor = 0;
+    let calibrationFrames = 0;
+    
+    function updateAudioLevel() {
+        analyser.getByteFrequencyData(dataArray);
+        
+        // Calculate average volume and frequency distribution
+        let sum = 0;
+        let highFreqSum = 0;
+        let lowFreqSum = 0;
+        
+        for (let i = 0; i < bufferLength; i++) {
+            sum += dataArray[i];
+            if (i < bufferLength / 3) {
+                lowFreqSum += dataArray[i];
+            } else if (i > 2 * bufferLength / 3) {
+                highFreqSum += dataArray[i];
+            }
+        }
+        
+        const average = sum / bufferLength;
+        const highFreqAvg = highFreqSum / (bufferLength / 3);
+        const lowFreqAvg = lowFreqSum / (bufferLength / 3);
+        
+        // Calibrate noise floor during first few seconds
+        if (calibrationFrames < 50) {
+            noiseFloor = Math.max(noiseFloor, average);
+            calibrationFrames++;
+        }
+        
+        // Update audio level indicator
+        const audioLevelEl = document.getElementById('audio-level');
+        if (audioLevelEl) {
+            const percentage = Math.round((average / 255) * 100);
+            audioLevelEl.style.width = percentage + '%';
+            audioLevelEl.textContent = percentage + '%';
+            
+            // Enhanced feedback detection
+            const feedbackRisk = detectFeedbackRisk(average, highFreqAvg, lowFreqAvg, noiseFloor);
+            
+            if (feedbackRisk === 'high') {
+                feedbackCounter++;
+                audioLevelEl.style.backgroundColor = '#ff4444';
+                document.getElementById('feedback-warning').style.display = 'block';
+                
+                // Auto-adjust audio constraints if feedback detected for 5+ frames
+                if (feedbackCounter > 5) {
+                    autoAdjustAudioSettings();
+                    feedbackCounter = 0;
+                }
+            } else if (feedbackRisk === 'medium') {
+                audioLevelEl.style.backgroundColor = '#ffaa00';
+                document.getElementById('feedback-warning').style.display = 'none';
+                feedbackCounter = Math.max(0, feedbackCounter - 1);
+            } else {
+                audioLevelEl.style.backgroundColor = '#00aa00';
+                document.getElementById('feedback-warning').style.display = 'none';
+                feedbackCounter = Math.max(0, feedbackCounter - 1);
+            }
+        }
+    }
+    
+    audioLevelInterval = setInterval(updateAudioLevel, 100);
+}
+
+function detectFeedbackRisk(average, highFreq, lowFreq, noiseFloor) {
+    // High average level with disproportionate high frequencies suggests feedback
+    if (average > 200 && highFreq > lowFreq * 1.5) {
+        return 'high';
+    }
+    
+    // Sustained levels significantly above noise floor
+    if (average > noiseFloor * 3 && average > 150) {
+        return 'medium';
+    }
+    
+    return 'low';
+}
+
+function autoAdjustAudioSettings() {
+    console.log('Auto-adjusting audio settings due to feedback detection');
+    
+    // Force enable all audio enhancements
+    document.getElementById('echo-cancellation').checked = true;
+    document.getElementById('noise-suppression').checked = true;
+    document.getElementById('auto-gain-control').checked = true;
+    
+    // Show notification to user
+    const notification = document.createElement('div');
+    notification.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        background-color: #ff9800;
+        color: white;
+        padding: 15px;
+        border-radius: 5px;
+        z-index: 1000;
+        max-width: 300px;
+    `;
+    notification.textContent = 'Audio feedback detected! Auto-enabled all audio enhancements.';
+    document.body.appendChild(notification);
+    
+    setTimeout(() => {
+        document.body.removeChild(notification);
+    }, 5000);
+}
+
+function stopAudioMonitoring() {
+    if (audioLevelInterval) {
+        clearInterval(audioLevelInterval);
+        audioLevelInterval = null;
+    }
+    
+    if (audioContext && audioContext.state !== 'closed') {
+        audioContext.close();
+        audioContext = null;
+    }
+    
+    analyser = null;
+    microphoneStream = null;
+    
+    // Reset audio level indicator
+    const audioLevelEl = document.getElementById('audio-level');
+    if (audioLevelEl) {
+        audioLevelEl.style.width = '0%';
+        audioLevelEl.textContent = '0%';
+        audioLevelEl.style.backgroundColor = '#00aa00';
+    }
+    
+    const feedbackWarning = document.getElementById('feedback-warning');
+    if (feedbackWarning) {
+        feedbackWarning.style.display = 'none';
+    }
 }
 
 enumerateInputDevices();

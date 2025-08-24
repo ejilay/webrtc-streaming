@@ -25,13 +25,57 @@
     #media {
         max-width: 1280px;
     }
+    
+    .audio-controls {
+        margin: 10px 0;
+        padding: 10px;
+        border: 1px solid #ddd;
+        border-radius: 5px;
+        background-color: #f9f9f9;
+    }
+    
+    .audio-level-container {
+        margin: 10px 0;
+    }
+    
+    .audio-level-bar {
+        width: 100%;
+        height: 20px;
+        background-color: #eee;
+        border-radius: 10px;
+        overflow: hidden;
+        position: relative;
+    }
+    
+    #audio-level {
+        height: 100%;
+        background-color: #00aa00;
+        width: 0%;
+        transition: width 0.1s;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: white;
+        font-size: 12px;
+        font-weight: bold;
+    }
+    
+    .feedback-warning {
+        background-color: #ff4444;
+        color: white;
+        padding: 10px;
+        margin: 10px 0;
+        border-radius: 5px;
+        display: none;
+        font-weight: bold;
+    }
     </style>
 </head>
 <body>
 
 <h2>Options</h2>
 <div class="option">
-    <input id="use-datachannel" checked="checked" type="checkbox"/>
+    <input id="use-datachannel" type="checkbox"/>
     <label for="use-datachannel">Use datachannel</label>
     <select id="datachannel-parameters">
         <option value='{"ordered": true}'>Ordered, reliable</option>
@@ -52,6 +96,42 @@
         <option value="PCMU/8000">PCMU</option>
         <option value="PCMA/8000">PCMA</option>
     </select>
+</div>
+
+<div class="audio-controls">
+    <h3>Audio Enhancement Controls</h3>
+    <div class="option">
+        <input id="echo-cancellation" type="checkbox" checked="checked"/>
+        <label for="echo-cancellation">Echo Cancellation</label>
+        <small> - Removes acoustic echo from speakers</small>
+    </div>
+    <div class="option">
+        <input id="noise-suppression" type="checkbox" checked="checked"/>
+        <label for="noise-suppression">Noise Suppression</label>
+        <small> - Reduces background noise</small>
+    </div>
+    <div class="option">
+        <input id="auto-gain-control" type="checkbox"/>
+        <label for="auto-gain-control">Auto Gain Control</label>
+        <small> - Automatically adjusts microphone volume</small>
+    </div>
+    
+    <div class="audio-level-container">
+        <label>Audio Level Monitor:</label>
+        <div class="audio-level-bar">
+            <div id="audio-level">0%</div>
+        </div>
+        <small>Green: Normal, Orange: High, Red: Potential Feedback</small>
+    </div>
+    
+    <div id="feedback-warning" class="feedback-warning">
+        ⚠️ WARNING: High audio levels detected! Potential feedback loop. Consider:
+        <ul>
+            <li>Using headphones</li>
+            <li>Reducing speaker volume</li>
+            <li>Moving microphone away from speakers</li>
+        </ul>
+    </div>
 </div>
 <div class="option">
     <input id="use-video" type="checkbox"/>
@@ -96,6 +176,19 @@
 <p>
     Signaling state: <span id="signaling-state"></span>
 </p>
+
+<h2>Audio Processing Status</h2>
+<div class="audio-controls">
+    <p><strong>Current Audio Enhancements:</strong></p>
+    <ul>
+        <li>✅ Browser-level echo cancellation and noise suppression enabled by default</li>
+        <li>✅ Server-side audio processing with noise gating and dynamic compression</li>
+        <li>✅ Real-time audio level monitoring with feedback detection</li>
+        <li>✅ Automatic audio enhancement adjustment when feedback is detected</li>
+        <li>✅ OpenAI near-field noise reduction with aggressive mode enabled</li>
+    </ul>
+    <p><small><em>Note: Audio enhancements work best with headphones to prevent acoustic feedback.</em></small></p>
+</div>
 
 <div id="media" style="display: none">
     <h2>Media</h2>
