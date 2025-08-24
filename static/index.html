@@ -3,210 +3,459 @@
 <head>
     <meta charset="UTF-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>WebRTC demo</title>
+    <title>
+        Всероссийский форум развития жилищно-коммунального хозяйства
+    </title>
     <style>
-    button {
-        padding: 8px 16px;
-    }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
 
-    pre {
-        overflow-x: hidden;
-        overflow-y: auto;
-    }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+        }
 
-    video {
-        width: 100%;
-    }
+        .main-container {
+            text-align: center;
+            position: relative;
+            z-index: 10;
+        }
 
-    .option {
-        margin-bottom: 8px;
-    }
+        h1 {
+            font-size: 3rem;
+            font-weight: 300;
+            margin-bottom: 2rem;
+            opacity: 0.9;
+        }
 
-    #media {
-        max-width: 1280px;
-    }
-    
-    .audio-controls {
-        margin: 10px 0;
-        padding: 10px;
-        border: 1px solid #ddd;
-        border-radius: 5px;
-        background-color: #f9f9f9;
-    }
-    
-    .audio-level-container {
-        margin: 10px 0;
-    }
-    
-    .audio-level-bar {
-        width: 100%;
-        height: 20px;
-        background-color: #eee;
-        border-radius: 10px;
-        overflow: hidden;
-        position: relative;
-    }
-    
-    #audio-level {
-        height: 100%;
-        background-color: #00aa00;
-        width: 0%;
-        transition: width 0.1s;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        color: white;
-        font-size: 12px;
-        font-weight: bold;
-    }
-    
-    .feedback-warning {
-        background-color: #ff4444;
-        color: white;
-        padding: 10px;
-        margin: 10px 0;
-        border-radius: 5px;
-        display: none;
-        font-weight: bold;
-    }
+        .connect-button {
+            background: rgba(255, 255, 255, 0.2);
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            color: white;
+            font-size: 1.2rem;
+            padding: 1rem 3rem;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            backdrop-filter: blur(10px);
+            margin-bottom: 3rem;
+        }
+
+        .connect-button:hover {
+            background: rgba(255, 255, 255, 0.3);
+            border-color: rgba(255, 255, 255, 0.5);
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+        }
+
+        .connect-button:active {
+            transform: translateY(0);
+        }
+
+        .connect-button.connected {
+            background: rgba(76, 175, 80, 0.8);
+            border-color: rgba(76, 175, 80, 1);
+        }
+
+        .audio-visualizer {
+            width: 200px;
+            height: 200px;
+            border-radius: 50%;
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto;
+            position: relative;
+            transition: all 0.3s ease;
+        }
+
+        .audio-visualizer.active {
+            animation: pulse 2s infinite ease-in-out;
+            border-color: rgba(76, 175, 80, 0.8);
+            box-shadow: 0 0 30px rgba(76, 175, 80, 0.3);
+        }
+
+        @keyframes pulse {
+            0%, 100% {
+                transform: scale(1);
+                opacity: 0.8;
+            }
+            50% {
+                transform: scale(1.1);
+                opacity: 1;
+            }
+        }
+
+        .audio-bars {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 3px;
+        }
+
+        .bar {
+            width: 4px;
+            height: 20px;
+            background: rgba(255, 255, 255, 0.6);
+            border-radius: 2px;
+            animation: wave 1s infinite ease-in-out;
+        }
+
+        .bar:nth-child(2) { animation-delay: 0.1s; }
+        .bar:nth-child(3) { animation-delay: 0.2s; }
+        .bar:nth-child(4) { animation-delay: 0.3s; }
+        .bar:nth-child(5) { animation-delay: 0.4s; }
+        .bar:nth-child(6) { animation-delay: 0.3s; }
+        .bar:nth-child(7) { animation-delay: 0.2s; }
+        .bar:nth-child(8) { animation-delay: 0.1s; }
+
+        @keyframes wave {
+            0%, 100% {
+                transform: scaleY(0.5);
+                opacity: 0.5;
+            }
+            50% {
+                transform: scaleY(2);
+                opacity: 1;
+            }
+        }
+
+        .status-message {
+            margin-top: 1rem;
+            font-size: 1.1rem;
+            opacity: 0.8;
+        }
+
+        .debug-panel {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(0, 0, 0, 0.9);
+            backdrop-filter: blur(10px);
+            transform: translateY(100%);
+            transition: transform 0.3s ease;
+            max-height: 80vh;
+            overflow-y: auto;
+            z-index: 1000;
+        }
+
+        .debug-panel.open {
+            transform: translateY(0);
+        }
+
+        .debug-toggle {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            color: white;
+            padding: 10px 15px;
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            z-index: 1001;
+            transition: all 0.3s ease;
+        }
+
+        .debug-toggle:hover {
+            background: rgba(0, 0, 0, 0.9);
+        }
+
+        .debug-content {
+            padding: 2rem;
+            color: white;
+        }
+
+        .debug-section {
+            margin-bottom: 2rem;
+        }
+
+        .debug-section h3 {
+            margin-bottom: 1rem;
+            color: #64b5f6;
+        }
+
+        .option {
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .option label {
+            font-size: 0.9rem;
+        }
+
+        .option small {
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 0.8rem;
+        }
+
+        select, input[type="checkbox"] {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            color: white;
+            padding: 5px 10px;
+            border-radius: 5px;
+        }
+
+        select option {
+            background: #333;
+            color: white;
+        }
+
+        pre {
+            background: rgba(0, 0, 0, 0.5);
+            padding: 1rem;
+            border-radius: 8px;
+            overflow-x: auto;
+            font-size: 0.8rem;
+            max-height: 200px;
+        }
+
+        .audio-level-bar {
+            width: 200px;
+            height: 20px;
+            background-color: rgba(255, 255, 255, 0.2);
+            border-radius: 10px;
+            overflow: hidden;
+            position: relative;
+            margin: 10px 0;
+        }
+
+        #audio-level {
+            height: 100%;
+            background-color: #00aa00;
+            width: 0%;
+            transition: width 0.1s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 12px;
+            font-weight: bold;
+        }
+
+        .feedback-warning {
+            background-color: #ff4444;
+            color: white;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+            display: none;
+            font-weight: bold;
+        }
+
+        #media {
+            display: none;
+        }
+
+        audio, video {
+            max-width: 100%;
+        }
     </style>
 </head>
 <body>
 
-<h2>Options</h2>
-<div class="option">
-    <input id="use-datachannel" type="checkbox"/>
-    <label for="use-datachannel">Use datachannel</label>
-    <select id="datachannel-parameters">
-        <option value='{"ordered": true}'>Ordered, reliable</option>
-        <option value='{"ordered": false, "maxRetransmits": 0}'>Unordered, no retransmissions</option>
-        <option value='{"ordered": false, "maxPacketLifetime": 500}'>Unordered, 500ms lifetime</option>
-    </select>
-</div>
-<div class="option">
-    <input id="use-audio" checked="checked" type="checkbox"/>
-    <label for="use-audio">Use audio</label>
-    <select id="audio-input">
-        <option value="" selected>Default device</option>
-    </select>
-    <select id="audio-codec">
-        <option value="default" selected>Default codecs</option>
-        <option value="opus/48000/2">Opus</option>
-        <option value="G722/8000">G722</option>
-        <option value="PCMU/8000">PCMU</option>
-        <option value="PCMA/8000">PCMA</option>
-    </select>
-</div>
-
-<div class="audio-controls">
-    <h3>Audio Enhancement Controls</h3>
-    <div class="option">
-        <input id="echo-cancellation" type="checkbox" checked="checked"/>
-        <label for="echo-cancellation">Echo Cancellation</label>
-        <small> - Removes acoustic echo from speakers</small>
-    </div>
-    <div class="option">
-        <input id="noise-suppression" type="checkbox" checked="checked"/>
-        <label for="noise-suppression">Noise Suppression</label>
-        <small> - Reduces background noise</small>
-    </div>
-    <div class="option">
-        <input id="auto-gain-control" type="checkbox"/>
-        <label for="auto-gain-control">Auto Gain Control</label>
-        <small> - Automatically adjusts microphone volume</small>
-    </div>
-    
-    <div class="audio-level-container">
-        <label>Audio Level Monitor:</label>
-        <div class="audio-level-bar">
-            <div id="audio-level">0%</div>
+    <div class="main-container">
+        <h1><div>Всероссийский форум развития жилищно-коммунального хозяйства</div>
+            <div>X Юбилейный всероссийский съезд региональных операторов капитального ремонта</div>
+            <div>РОССИЙСКАЯ ЭНЕРГЕТИЧЕСКАЯ НЕДЕЛЯ</div></h1>
+        
+        <button id="start" class="connect-button" onclick="start()">Начать общение голосом</button>
+        <button id="stop" class="connect-button connected" style="display: none" onclick="stop()">Отключиться</button>
+        
+        <div class="audio-visualizer" id="audio-visualizer">
+            <div class="audio-bars">
+                <div class="bar"></div>
+                <div class="bar"></div>
+                <div class="bar"></div>
+                <div class="bar"></div>
+                <div class="bar"></div>
+                <div class="bar"></div>
+                <div class="bar"></div>
+                <div class="bar"></div>
+            </div>
         </div>
-        <small>Green: Normal, Orange: High, Red: Potential Feedback</small>
+        
+        <div class="status-message" id="status-message">Готов к подключению</div>
     </div>
-    
-    <div id="feedback-warning" class="feedback-warning">
-        ⚠️ WARNING: High audio levels detected! Potential feedback loop. Consider:
-        <ul>
-            <li>Using headphones</li>
-            <li>Reducing speaker volume</li>
-            <li>Moving microphone away from speakers</li>
-        </ul>
+
+    <button class="debug-toggle" onclick="toggleDebugPanel()">Отладка</button>
+
+    <div class="debug-panel" id="debug-panel">
+        <div class="debug-content">
+            <div class="debug-section">
+                <h3>Connection Options</h3>
+                <div class="option">
+                    <input id="use-datachannel" type="checkbox"/>
+                    <label for="use-datachannel">Use datachannel</label>
+                    <select id="datachannel-parameters">
+                        <option value='{"ordered": true}'>Ordered, reliable</option>
+                        <option value='{"ordered": false, "maxRetransmits": 0}'>Unordered, no retransmissions</option>
+                        <option value='{"ordered": false, "maxPacketLifetime": 500}'>Unordered, 500ms lifetime</option>
+                    </select>
+                </div>
+                <div class="option">
+                    <input id="use-stun" type="checkbox"/>
+                    <label for="use-stun">Use STUN server</label>
+                </div>
+            </div>
+
+            <div class="debug-section">
+                <h3>Audio Settings</h3>
+                <div class="option">
+                    <input id="use-audio" checked="checked" type="checkbox"/>
+                    <label for="use-audio">Use audio</label>
+                    <select id="audio-input">
+                        <option value="" selected>Default device</option>
+                    </select>
+                    <select id="audio-codec">
+                        <option value="default" selected>Default codecs</option>
+                        <option value="opus/48000/2">Opus</option>
+                        <option value="G722/8000">G722</option>
+                        <option value="PCMU/8000">PCMU</option>
+                        <option value="PCMA/8000">PCMA</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="debug-section">
+                <h3>Audio Enhancement Controls</h3>
+                <div class="option">
+                    <input id="echo-cancellation" type="checkbox" checked="checked"/>
+                    <label for="echo-cancellation">Echo Cancellation</label>
+                    <small> - Removes acoustic echo from speakers</small>
+                </div>
+                <div class="option">
+                    <input id="noise-suppression" type="checkbox" checked="checked"/>
+                    <label for="noise-suppression">Noise Suppression</label>
+                    <small> - Reduces background noise</small>
+                </div>
+                <div class="option">
+                    <input id="auto-gain-control" type="checkbox"/>
+                    <label for="auto-gain-control">Auto Gain Control</label>
+                    <small> - Automatically adjusts microphone volume</small>
+                </div>
+                
+                <div class="audio-level-container">
+                    <label>Audio Level Monitor:</label>
+                    <div class="audio-level-bar">
+                        <div id="audio-level">0%</div>
+                    </div>
+                    <small>Green: Normal, Orange: High, Red: Potential Feedback</small>
+                </div>
+                
+                <div id="feedback-warning" class="feedback-warning">
+                    ⚠️ WARNING: High audio levels detected! Potential feedback loop. Consider:
+                    <ul>
+                        <li>Using headphones</li>
+                        <li>Reducing speaker volume</li>
+                        <li>Moving microphone away from speakers</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="debug-section">
+                <h3>Video Settings</h3>
+                <div class="option">
+                    <input id="use-video" type="checkbox"/>
+                    <label for="use-video">Use video</label>
+                    <select id="video-input">
+                        <option value="" selected>Default device</option>
+                    </select>
+                    <select id="video-resolution">
+                        <option value="" selected>Default resolution</option>
+                        <option value="320x240">320x240</option>
+                        <option value="640x480">640x480</option>
+                        <option value="960x540">960x540</option>
+                        <option value="1280x720">1280x720</option>
+                    </select>
+                    <select id="video-transform">
+                        <option value="none" selected>No transform</option>
+                        <option value="edges">Edge detection</option>
+                        <option value="cartoon">Cartoon effect</option>
+                        <option value="rotate">Rotate</option>
+                    </select>
+                    <select id="video-codec">
+                        <option value="default" selected>Default codecs</option>
+                        <option value="VP8/90000">VP8</option>
+                        <option value="H264/90000">H264</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="debug-section">
+                <h3>Connection State</h3>
+                <p>ICE gathering state: <span id="ice-gathering-state"></span></p>
+                <p>ICE connection state: <span id="ice-connection-state"></span></p>
+                <p>Signaling state: <span id="signaling-state"></span></p>
+            </div>
+
+            <div class="debug-section">
+                <h3>Audio Processing Status</h3>
+                <p><strong>Current Audio Enhancements:</strong></p>
+                <ul>
+                    <li>✅ Browser-level echo cancellation and noise suppression enabled by default</li>
+                    <li>✅ Server-side audio processing with noise gating and dynamic compression</li>
+                    <li>✅ Real-time audio level monitoring with feedback detection</li>
+                    <li>✅ Automatic audio enhancement adjustment when feedback is detected</li>
+                    <li>✅ OpenAI near-field noise reduction with aggressive mode enabled</li>
+                </ul>
+                <p><small><em>Note: Audio enhancements work best with headphones to prevent acoustic feedback.</em></small></p>
+            </div>
+
+            <div class="debug-section">
+                <h3>Data Channel</h3>
+                <pre id="data-channel" style="height: 200px;"></pre>
+            </div>
+
+            <div class="debug-section">
+                <h3>SDP Information</h3>
+                <h4>Offer</h4>
+                <pre id="offer-sdp"></pre>
+                <h4>Answer</h4>
+                <pre id="answer-sdp"></pre>
+            </div>
+        </div>
     </div>
-</div>
-<div class="option">
-    <input id="use-video" type="checkbox"/>
-    <label for="use-video">Use video</label>
-    <select id="video-input">
-        <option value="" selected>Default device</option>
-    </select>
-    <select id="video-resolution">
-        <option value="" selected>Default resolution</option>
-        <option value="320x240">320x240</option>
-        <option value="640x480">640x480</option>
-        <option value="960x540">960x540</option>
-        <option value="1280x720">1280x720</option>
-    </select>
-    <select id="video-transform">
-        <option value="none" selected>No transform</option>
-        <option value="edges">Edge detection</option>
-        <option value="cartoon">Cartoon effect</option>
-        <option value="rotate">Rotate</option>
-    </select>
-    <select id="video-codec">
-        <option value="default" selected>Default codecs</option>
-        <option value="VP8/90000">VP8</option>
-        <option value="H264/90000">H264</option>
-    </select>
-</div>
-<div class="option">
-    <input id="use-stun" type="checkbox"/>
-    <label for="use-stun">Use STUN server</label>
-</div>
 
-<button id="start" onclick="start()">Start</button>
-<button id="stop" style="display: none" onclick="stop()">Stop</button>
+    <div id="media" style="display: none">
+        <audio id="audio" autoplay="true"></audio>
+        <video id="video" autoplay="true" playsinline="true"></video>
+    </div>
 
-<h2>State</h2>
-<p>
-    ICE gathering state: <span id="ice-gathering-state"></span>
-</p>
-<p>
-    ICE connection state: <span id="ice-connection-state"></span>
-</p>
-<p>
-    Signaling state: <span id="signaling-state"></span>
-</p>
+    <script>
+        function toggleDebugPanel() {
+            const panel = document.getElementById('debug-panel');
+            panel.classList.toggle('open');
+        }
 
-<h2>Audio Processing Status</h2>
-<div class="audio-controls">
-    <p><strong>Current Audio Enhancements:</strong></p>
-    <ul>
-        <li>✅ Browser-level echo cancellation and noise suppression enabled by default</li>
-        <li>✅ Server-side audio processing with noise gating and dynamic compression</li>
-        <li>✅ Real-time audio level monitoring with feedback detection</li>
-        <li>✅ Automatic audio enhancement adjustment when feedback is detected</li>
-        <li>✅ OpenAI near-field noise reduction with aggressive mode enabled</li>
-    </ul>
-    <p><small><em>Note: Audio enhancements work best with headphones to prevent acoustic feedback.</em></small></p>
-</div>
+        function updateAudioVisualization(isActive) {
+            const visualizer = document.getElementById('audio-visualizer');
+            if (isActive) {
+                visualizer.classList.add('active');
+            } else {
+                visualizer.classList.remove('active');
+            }
+        }
 
-<div id="media" style="display: none">
-    <h2>Media</h2>
-
-    <audio id="audio" autoplay="true"></audio>
-    <video id="video" autoplay="true" playsinline="true"></video>
-</div>
-
-<h2>Data channel</h2>
-<pre id="data-channel" style="height: 200px;"></pre>
-
-<h2>SDP</h2>
-
-<h3>Offer</h3>
-<pre id="offer-sdp"></pre>
-
-<h3>Answer</h3>
-<pre id="answer-sdp"></pre>
+        function updateStatus(message) {
+            document.getElementById('status-message').textContent = message;
+        }
+    </script>
 
 <script src="client.js"></script>
 </body>

@@ -35,6 +35,17 @@ function createPeerConnection() {
 
     pc.addEventListener('iceconnectionstatechange', () => {
         iceConnectionLog.textContent += ' -> ' + pc.iceConnectionState;
+        
+        // Update main UI status based on connection state
+        if (pc.iceConnectionState === 'connected') {
+            updateStatus('Подключен');
+            updateAudioVisualization(true);
+        } else if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
+            updateStatus('Соединение потеряно');
+            updateAudioVisualization(false);
+        } else if (pc.iceConnectionState === 'connecting') {
+            updateStatus('Подключение...');
+        }
     }, false);
     iceConnectionLog.textContent = pc.iceConnectionState;
 
@@ -136,6 +147,7 @@ function negotiate() {
 
 function start() {
     document.getElementById('start').style.display = 'none';
+    updateStatus('Connecting...');
 
     pc = createPeerConnection();
 
@@ -235,6 +247,8 @@ function start() {
             // Initialize audio monitoring if audio is enabled
             if (constraints.audio) {
                 initAudioMonitoring(stream);
+                updateAudioVisualization(true);
+                updateStatus('Acquiring media...');
             }
             
             return negotiate();
@@ -251,6 +265,9 @@ function start() {
 function stop() {
     document.getElementById('stop').style.display = 'none';
     document.getElementById('start').style.display = 'block';
+    
+    updateStatus('Disconnected');
+    updateAudioVisualization(false);
 
     // Stop audio monitoring
     stopAudioMonitoring();
@@ -392,7 +409,7 @@ function initAudioMonitoring(stream) {
             calibrationFrames++;
         }
         
-        // Update audio level indicator
+        // Update audio level indicator (for debug panel)
         const audioLevelEl = document.getElementById('audio-level');
         if (audioLevelEl) {
             const percentage = Math.round((average / 255) * 100);
@@ -422,9 +439,47 @@ function initAudioMonitoring(stream) {
                 feedbackCounter = Math.max(0, feedbackCounter - 1);
             }
         }
+        
+        // Update main visualizer bars
+        updateVisualizerBars(dataArray, bufferLength);
     }
     
     audioLevelInterval = setInterval(updateAudioLevel, 100);
+}
+
+function updateVisualizerBars(dataArray, bufferLength) {
+    const bars = document.querySelectorAll('.bar');
+    if (bars.length === 0) return;
+    
+    // Group frequency data into 8 segments for the 8 bars
+    const segmentSize = Math.floor(bufferLength / bars.length);
+    
+    bars.forEach((bar, index) => {
+        let sum = 0;
+        const start = index * segmentSize;
+        const end = start + segmentSize;
+        
+        // Average the frequency data for this segment
+        for (let i = start; i < end && i < bufferLength; i++) {
+            sum += dataArray[i];
+        }
+        
+        const average = sum / segmentSize;
+        const intensity = Math.min(average / 255, 1);
+        
+        // Scale the bar height based on frequency intensity
+        const scale = 0.2 + (intensity * 1.8); // Scale from 0.2 to 2.0
+        bar.style.transform = `scaleY(${scale})`;
+        
+        // Change color based on intensity
+        if (intensity > 0.7) {
+            bar.style.backgroundColor = 'rgba(76, 175, 80, 1)'; // Green
+        } else if (intensity > 0.3) {
+            bar.style.backgroundColor = 'rgba(255, 193, 7, 1)'; // Yellow
+        } else {
+            bar.style.backgroundColor = 'rgba(255, 255, 255, 0.6)'; // White
+        }
+    });
 }
 
 function detectFeedbackRisk(average, highFreq, lowFreq, noiseFloor) {
@@ -497,5 +552,29 @@ function stopAudioMonitoring() {
         feedbackWarning.style.display = 'none';
     }
 }
+
+// Status and visualization helper functions (these are also available from the HTML)
+function updateStatus(message) {
+    const statusEl = document.getElementById('status-message');
+    if (statusEl) {
+        statusEl.textContent = message;
+    }
+}
+
+function updateAudioVisualization(isActive) {
+    const visualizer = document.getElementById('audio-visualizer');
+    if (visualizer) {
+        if (isActive) {
+            visualizer.classList.add('active');
+        } else {
+            visualizer.classList.remove('active');
+        }
+    }
+}
+
+// Initialize the interface
+document.addEventListener('DOMContentLoaded', function() {
+    updateStatus('Готов к подключению');
+});
 
 enumerateInputDevices();
