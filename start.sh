@@ -1,3 +1,3 @@
 #!/bin/sh
 set -x
-python server.py --host localhost --port PORT
+python server.py --host localhost --port ${PORT}
