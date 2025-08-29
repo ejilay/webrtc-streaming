@@ -28,19 +28,21 @@ RUN apt-get update && apt-get install -y \
 # Create directory for temporary files
 RUN mkdir -p /tmp/webrtc
 
-# Expose the port the app runs on
-EXPOSE 80
 
 # Set environment variables
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
+ENV PORT=81
+# Expose the port the app runs on
+EXPOSE ${PORT}
+
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:81/ || exit 1
+    CMD curl -f http://localhost:${PORT}/ || exit 1
 
 # Run the application
-CMD ["python", "server.py", "--host", "localhost", "--port", "81"]
+CMD ["python", "server.py", "--host", "localhost", "--port", "${PORT}"]
 
 
 # Copy requirements first for better Docker layer caching
