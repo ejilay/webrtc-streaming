@@ -35,7 +35,7 @@ last_openai_response = None
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 # OpenAI Realtime API configuration
-OPENAI_WS_URL = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2025-06-03"
+OPENAI_WS_URL = "wss://api.openai.com/v1/realtime?model=gpt-realtime-2025-08-28"
 OPENAI_HEADERS = {
     "Authorization": f"Bearer {OPENAI_API_KEY}",
     "OpenAI-Beta": "realtime=v1"
@@ -247,7 +247,7 @@ async def offer(request):
         session_update = {
                             "modalities": ["text", "audio"],
                             "instructions": AI_INSTRUCTIONS,
-                            "voice": "shimmer",
+                            "voice": "marin",
                             "input_audio_noise_reduction": {"type":"near_field"},
                             "input_audio_transcription": {
                                 "model": "gpt-4o-transcribe",
