@@ -42,7 +42,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:${PORT}/ || exit 1
 
 # Run the application
-CMD ["sh", "/start.sh"]
+CMD ["sh", "start.sh"]
 #CMD ["python", "server.py", "--host", "localhost", "--port", "${PORT}"]
 
 
