@@ -37,7 +37,7 @@ ENV PYTHONUNBUFFERED=1
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost/ || exit 1
+    CMD curl -f http://localhost:81/ || exit 1
 
 # Run the application
 CMD ["python", "server.py", "--host", "localhost", "--port", "81"]
