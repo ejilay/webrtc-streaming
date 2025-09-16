@@ -67,7 +67,7 @@ class CustomAudioTrack(MediaStreamTrack):
         
         self._count += 1
         
-        delta = (TIME_SPAN - (time.time() - self._last_sent_time) - 0.001)/2.0
+        delta = TIME_SPAN - (time.time() - self._last_sent_time) - 0.002
         if delta > 0:
             await asyncio.sleep(delta)
         self._last_sent_time = time.time()
