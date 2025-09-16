@@ -67,7 +67,7 @@ class CustomAudioTrack(MediaStreamTrack):
         
         self._count += 1
         
-        delta = TIME_SPAN - (time.time() - self._last_sent_time) - 0.001
+        delta = (TIME_SPAN - (time.time() - self._last_sent_time) - 0.001)/2.0
         if delta > 0:
             await asyncio.sleep(delta)
         self._last_sent_time = time.time()
@@ -75,7 +75,7 @@ class CustomAudioTrack(MediaStreamTrack):
 
 
 
-resampler = av.AudioResampler(format='s16', layout='stereo', rate=48000)
+resampler = av.AudioResampler(format='s16', layout='stereo', rate=SAMPLE_RATE_OUT)
 
 
 async def process_audio_from_openai(queue, out_track: CustomAudioTrack):
